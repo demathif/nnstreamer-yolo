@@ -1,8 +1,14 @@
-# COCO128 → nnstreamer → YOLO (GStreamer demo)
+# nnstreamer → YOLO detection (GStreamer demo)
 
-A small GStreamer project that reads the **COCO128** dataset images, runs a
-**YOLO** model inside an **nnstreamer** inference step, draws the detected
-**bounding boxes** and writes the annotated images to `out/`.
+A small GStreamer project that runs a **YOLO** model inside an **nnstreamer**
+inference step and draws the detected **bounding boxes**. Two inputs are
+provided:
+
+- [`scripts/coco128_yolo.sh`](scripts/coco128_yolo.sh) — reads the **COCO128**
+  dataset images and writes annotated JPEGs to `out/`.
+- [`scripts/camera_yolo.sh`](scripts/camera_yolo.sh) — reads the **laptop camera**
+  (or any V4L2 device) and shows the annotated video in a window (or writes JPEG
+  snapshots).
 
 Target: a normal **x86_64 Ubuntu** host. nnstreamer is installed from the
 `nnstreamer/ppa` (no source builds, no repository cloning).
@@ -12,7 +18,8 @@ Target: a normal **x86_64 Ubuntu** host. nnstreamer is installed from the
 ```text
 scripts/setup.sh             install GStreamer + nnstreamer + Python venv (idempotent)
 scripts/prepare.sh           download COCO128 + export YOLOv8n to ONNX + labels
-scripts/coco128_yolo.sh      the detection pipeline (COCO128 image input)
+scripts/coco128_yolo.sh      detection pipeline, COCO128 image input
+scripts/camera_yolo.sh       detection pipeline, camera input (same chain)
 scripts/requirements.txt     runtime Python deps
 scripts/requirements-export.txt  model-export Python deps
 assets/models/               yolov8n.onnx + coco_labels.txt (from prepare.sh)
@@ -20,6 +27,9 @@ datasets/coco128/            dataset images (from prepare.sh)
 out/                         annotated images (from coco128_yolo.sh)
 plans/plan.md                design notes
 ```
+
+Both pipeline scripts share the same header, configuration block, section
+banners and per-element comments; only the source (and its options) differ.
 
 ## Quick start
 
@@ -33,12 +43,13 @@ scripts/setup.sh
 #    Needs network access but no sudo.
 scripts/prepare.sh
 
-# 3. Run the pipeline over all 128 images into out/.
+# 3. Run over all 128 images into out/, or show a live window.
 scripts/coco128_yolo.sh
-
-# Smoke test on the first 5 images, or a live window:
 scripts/coco128_yolo.sh --limit 5
 scripts/coco128_yolo.sh --display
+
+# 4. Or run on the laptop camera.
+scripts/camera_yolo.sh
 ```
 
 ## Options
@@ -53,7 +64,26 @@ scripts/coco128_yolo.sh --display
 | `--dry-run` | print the `gst-launch` command without running it |
 | `-h`, `--help` | show the help |
 
-## Pipeline
+`scripts/camera_yolo.sh`:
+
+| Option | Effect |
+|--------|--------|
+| `--device PATH` | V4L2 camera device (default: `/dev/video0`) |
+| `--caps CAPS` | pin the camera format (default: MJPG 640x480@30) |
+| `--fps N` | rate fed to the model (default: 3) |
+| `--record-dir DIR` | write annotated JPEG snapshots instead of a window |
+| `--dry-run` | print the `gst-launch` command without running it |
+| `-h`, `--help` | show the help |
+
+```sh
+scripts/camera_yolo.sh                       # live window, /dev/video0
+scripts/camera_yolo.sh --device /dev/video1  # pick another camera
+scripts/camera_yolo.sh --fps 5               # faster rate (if the CPU keeps up)
+scripts/camera_yolo.sh --caps "video/x-raw,format=YUY2,width=640,height=480,framerate=30/1"
+scripts/camera_yolo.sh --record-dir out/cam  # JPEG snapshots instead of a window
+```
+
+## Pipeline — images (COCO128)
 
 ```text
 multifilesrc (staged coco128/*.jpg) ! jpegdec ! videoconvert ! videoscale
@@ -70,6 +100,20 @@ multifilesrc (staged coco128/*.jpg) ! jpegdec ! videoconvert ! videoscale
   ! compositor name=mix ! videoconvert
   ! video/x-raw,format=RGB,width=640,height=640
   ! videoconvert ! jpegenc ! multifilesink location=out/detected_%04d.jpg
+```
+
+## Pipeline — camera
+
+```text
+v4l2src device=/dev/video0
+  ! image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec
+  ! videoconvert ! videoscale ! video/x-raw,format=RGB,width=640,height=640
+  ! videorate ! video/x-raw,framerate=3/1
+  ! tee name=t
+      (same two branches and the same inference chain as above)
+  ! compositor name=mix ! videoconvert
+  ! video/x-raw,format=RGB,width=640,height=640
+  ! videoconvert ! autovideosink sync=false
 ```
 
 `tensor_decoder` produces an RGBA overlay with a transparent background, so the
@@ -101,15 +145,17 @@ memory is interleaved **HWC**:
 
 ## Configuration
 
-The knobs live at the top of [`scripts/coco128_yolo.sh`](scripts/coco128_yolo.sh):
-input directory, model path, `tensor_filter` framework, input size, normalization
-divisor, decoder options, output directory, sink type and image limit.
+The knobs live at the top of each script: model path, `tensor_filter` framework,
+input size, normalization divisor, decoder options and the output. The camera
+script adds `DEVICE`, `CAM_CAPS`, `CAM_FPS` and `RECORD_DIR`.
 
 ## Verified
 
-The pipeline processes all 128 COCO128 images and writes
-`out/detected_0000.jpg .. out/detected_0127.jpg`, with labelled boxes such as
-`zebra`, `bowl`, `broccoli`, `cow`, `laptop`, `person`.
+- **COCO128**: all 128 images processed, `out/detected_0000.jpg ..
+  out/detected_0127.jpg`, labelled boxes such as `zebra`, `bowl`, `broccoli`,
+  `cow`, `laptop`, `person`.
+- **Camera** (`/dev/video0`, HP HD Camera): live window runs with no errors;
+  recording produced frames with drawn boxes (`person`, `chair`).
 
 ## Troubleshooting
 
@@ -118,9 +164,17 @@ The pipeline processes all 128 COCO128 images and writes
   `gst-inspect-1.0 tensor_filter`.
 - **`not-negotiated` around `tensor_filter`** — the tensor shape does not match
   the model; check the input transpose (`option=1:2:0:3`) and the model input.
-- **No boxes drawn** — the boxes are filtered out or drawn off-frame; adjust
-  `option3` (first field and the confidence threshold).
+- **No boxes drawn (images)** — the boxes are filtered out or drawn off-frame;
+  adjust `option3` (first field and the confidence threshold).
+- **Camera: `V4l2Src ... not-negotiated` at startup** — the device is busy or the
+  format is unsupported: close other apps using the camera, or pick another
+  device/format with `--device`/`--caps`.
+- **Camera: `decodebin: Delayed linking failed`** — not used anymore (the decoder
+  is selected explicitly from `--caps`).
+- **Camera: window shows no boxes** — the model must keep up with the source;
+  lower `--fps`. The compositor only blends the overlay when both branches run at
+  the same rate.
 - **Live window fails to negotiate** — each sink starts with a `videoconvert` so
   the sink can pick its own format; forcing RGB right before `autovideosink`
   breaks negotiation on Wayland.
-- **`compositor` missing** — the script falls back to `videomixer`.
+- **`compositor` missing** — the scripts fall back to `videomixer`.
