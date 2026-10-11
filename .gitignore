@@ -1,0 +1,15 @@
+# Downloaded datasets and generated artifacts are not versioned.
+datasets/
+out/
+assets/models/
+
+# Python virtual environment used to export the model.
+.venv/
+
+# Python bytecode.
+__pycache__/
+*.pyc
+
+# Editor / OS noise.
+.DS_Store
+*.swp

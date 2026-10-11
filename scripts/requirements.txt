@@ -1,0 +1,6 @@
+# Runtime Python dependencies for the project scripts.
+#
+# nnstreamer uses the system libonnxruntime provided by the
+# "nnstreamer-onnxruntime" package. The Python package installed here is only
+# used to inspect or validate the exported ONNX model locally.
+onnxruntime

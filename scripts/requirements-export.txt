@@ -1,0 +1,7 @@
+# Python dependencies used only to export the YOLO model to ONNX.
+#
+# Installed inside the project virtual environment by scripts/prepare.sh.
+# ultralytics pulls in torch / torchvision / numpy automatically.
+ultralytics
+onnx
+onnxslim
